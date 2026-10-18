@@ -1,0 +1,47 @@
+name: Pantau SIKEPO
+
+# Tiap 5 menit (GitHub kadang telat 5-15 menit). Bila SIKEPO tidak menjawab,
+# langkah gagal -> GitHub mengirim email "Run failed" ke pemilik repo.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cek:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Web dan API (Node + database)
+        run: |
+          cek() {
+            web=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 https://sikepo2.batangharikab.go.id/)
+            api=$(curl -s --max-time 20 https://sikepo2.batangharikab.go.id/api/sehat)
+            echo "web=$web api=$api"
+            [ "$web" = 200 ] && [ "$api" = '{"ok":true}' ]
+          }
+          # Tiga kali percobaan berjarak 30 dtk supaya gangguan sesaat tidak membunyikan alarm.
+          for i in 1 2 3; do cek && exit 0; sleep 30; done
+          echo "::error::SIKEPO TIDAK MENJAWAB (web=$web api=$api)"
+          exit 1
+
+      - name: Sertifikat SSL masih > 10 hari
+        run: |
+          akhir=$(echo | openssl s_client -servername sikepo2.batangharikab.go.id -connect sikepo2.batangharikab.go.id:443 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)
+          echo "SSL berakhir: $akhir"
+          sisa=$(( ( $(date -d "$akhir" +%s) - $(date +%s) ) / 86400 ))
+          echo "sisa $sisa hari"
+          [ "$sisa" -gt 10 ] || { echo "::error::SSL tinggal $sisa hari"; exit 1; }
+
+      # GitHub mematikan jadwal repo publik yang 60 hari tanpa kegiatan; nyalakan ulang tiap Senin 00:0x UTC.
+      - name: Jaga jadwal tetap hidup
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%u%H)" = "100" ] && [ "$(date -u +%M)" -lt 10 ]; then
+            gh api -X PUT repos/${{ github.repository }}/actions/workflows/pantau.yml/enable && echo "jadwal disegarkan"
+          fi
